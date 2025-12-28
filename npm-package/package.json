@@ -1,12 +1,26 @@
 {
   "name": "mobile-org",
-  "version": "1.1.4",
+  "version": "0.1.2",
+  "description": "Mobile org tree selector component for Vue 2 (mobile-friendly).",
+  "main": "mobile-org.common.js",
+  "unpkg": "mobile-org.umd.min.js",
+  "browser": "mobile-org.umd.min.js",
+  "style": "mobile-org.css",
+  "files": [
+    "mobile-org.common.js",
+    "mobile-org.umd.js",
+    "mobile-org.umd.min.js",
+    "mobile-org.css",
+    "README.md"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
   "author": {
     "name": "ysh",
     "email": "stefan_ysh@foxmail.com",
     "url": "https://github.com/stefan-ysh"
   },
-  "main": "mobile-org.umd.min.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/stefan-ysh/mobile_org_tree.git"
@@ -14,5 +28,21 @@
   "bugs": {
     "url": "https://github.com/stefan-ysh/mobile_org_tree/issues",
     "email": "stefan_ysh@foxmail.com"
+  },
+  "homepage": "https://github.com/stefan-ysh/mobile_org_tree",
+  "keywords": [
+    "vue2",
+    "mobile",
+    "org",
+    "organization",
+    "tree",
+    "selector"
+  ],
+  "license": "UNLICENSED",
+  "peerDependencies": {
+    "vue": "^2.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

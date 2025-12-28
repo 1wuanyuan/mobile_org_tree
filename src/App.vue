@@ -6,7 +6,9 @@
       :isShowIcon="isShowIcon"
       :isMultiple="isMultiple"
       :defaultShowType="defaultShowType"
+      v-model="selectedList"
       @on-submit="childSubmit"
+      @on-submit-invalid="childSubmitInvalid"
       @on-search="childSearch"
       @on-expand="childExpand"
       @on-nav="childNav"
@@ -64,8 +66,15 @@ export default {
       // 模拟组织数据
       OrgData,
 
+      // Prebuilt flat indexes for faster search
+      orgFlatIndex: [],
+      roleFlatIndex: [],
+
       // 数据源
       data: [],
+
+      // v-model for selected items
+      selectedList: [],
 
       // 控制头像显隐的变量
       isShowIcon: true,
@@ -73,6 +82,11 @@ export default {
   },
 
   methods: {
+    buildSearchIndex() {
+      this.orgFlatIndex = this.flatten(this.OrgData);
+      this.roleFlatIndex = this.flatten(this.RoleData);
+    },
+
     // 提交
     childSubmit(selectedItems) {
       let list = [];
@@ -82,19 +96,18 @@ export default {
       alert(`点击了提交 ： ${list.join(",")}`);
     },
 
+    // 必选校验失败
+    childSubmitInvalid(payload) {
+      alert(payload && payload.message ? payload.message : "未做任何选择，请选择后重试。");
+    },
+
     // 搜索
     childSearch(searchKey) {
       if (searchKey == "") {
         this.getDataList();
         return;
       }
-      let arr;
-      if (this.defaultShowType == "org") {
-        arr = JSON.parse(JSON.stringify(this.OrgData));
-      } else {
-        arr = JSON.parse(JSON.stringify(this.RoleData));
-      }
-      let res = this.flatten(arr);
+      const res = this.defaultShowType == "org" ? this.orgFlatIndex : this.roleFlatIndex;
       let tempVal = res.filter((item) => {
         return item.name.includes(searchKey);
       });
@@ -132,7 +145,6 @@ export default {
 
     // 清除搜索内容
     childClearSearchKey() {
-      console.log("清除了搜索内容");
       this.getDataList();
     },
 
@@ -157,6 +169,7 @@ export default {
   },
 
   created() {
+    this.buildSearchIndex();
     this.getDataList();
   },
 

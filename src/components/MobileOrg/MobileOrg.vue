@@ -14,12 +14,15 @@
           @compositionend="handleComposionend"
         />
         <!-- 清空搜索按钮 -->
-        <span
+        <button
+          type="button"
           class="clear-search-key-btn"
           @click="clearSearchKey"
           v-if="isShowClearBtn && searchKey"
-          >×</span
+          aria-label="清空搜索"
         >
+          ×
+        </button>
       </form>
     </div>
     <!-- 下方内容显示区 -->
@@ -28,14 +31,22 @@
       <div class="org-content__current">
         <!-- 导航区 -->
         <div class="org-content__current__nav">
-          <span @click="handleCurrentListClick(-1)">全部</span>
-          <span
+          <button
+            type="button"
+            class="breadcrumb-btn"
+            @click="handleCurrentListClick(-1)"
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            class="breadcrumb-btn"
             v-for="(item, index) in currentData"
             :key="index"
             @click="handleCurrentListClick(index)"
           >
             {{ item[label] }}
-          </span>
+          </button>
         </div>
         <slot name="switch-show-type-btn" :showType="showType">
           <!-- 切换按钮 -->
@@ -50,7 +61,25 @@
       <!-- 内容显示区 -->
       <div class="org-content__warp">
         <ul class="org-content__ul">
-          <template v-if="renderData.length > 0">
+          <template v-if="isLoading">
+            <li class="empty">
+              <small>{{ loadingText }}</small>
+            </li>
+          </template>
+          <template v-else-if="loadError">
+            <li class="empty">
+              <small>{{ loadErrorText }}</small>
+              <button
+                v-if="enableRetry && lastLoadAction"
+                type="button"
+                class="retry-btn"
+                @click="retryLastLoad"
+              >
+                {{ retryText }}
+              </button>
+            </li>
+          </template>
+          <template v-else-if="renderData.length > 0">
             <slot name="content-area" :renderData="renderData">
               <li
                 class="org-content__item"
@@ -87,13 +116,16 @@
                   {{ item[label] }}
                 </span>
                 <!-- 下级按钮 -->
-                <span
+                <button
+                  type="button"
                   v-if="item.hasOwnProperty(children)"
                   @click="handleItemChildClick(item)"
                   class="org-content__item-child"
+                  :disabled="isLoading"
+                  aria-label="查看下级"
                 >
                   >
-                </span>
+                </button>
               </li>
             </slot>
           </template>
@@ -136,12 +168,12 @@
               >
             </div>
             <div class="result-area__operation">
-              <span class="cancel-btn" @click="handleCancel">{{
-                cancelText
-              }}</span>
-              <span @click="handleSubmit" class="submit-btn">{{
-                submitText
-              }}</span>
+              <button type="button" class="cancel-btn" @click="handleCancel">
+                {{ cancelText }}
+              </button>
+              <button type="button" class="submit-btn" @click="handleSubmit">
+                {{ submitText }}
+              </button>
             </div>
           </slot>
         </div>
@@ -154,13 +186,20 @@ export default {
   name: "MobileOrg",
 
   props: {
+    // v-model support
+    // When provided, this component becomes controlled by `value`.
+    value: {
+      type: Array,
+      required: false,
+    },
+
     data: {
       type: Array,
       default: () => [],
     },
     selectTypes: {
       type: Array,
-      default: () => ["org", "role"],
+      default: () => ["user", "org", "role"],
     },
     defaultIcon: {
       type: String,
@@ -197,6 +236,12 @@ export default {
       default: "搜索",
     },
 
+    // search debounce delay (ms). 0 means no debounce.
+    searchDebounce: {
+      type: Number,
+      default: 0,
+    },
+
     submitText: {
       type: String,
       default: "提交",
@@ -220,6 +265,18 @@ export default {
     isSelectRequired: {
       type: Boolean,
       default: true,
+    },
+
+    // When required selection is enabled and no items are selected,
+    // emit on-submit-invalid and optionally show a native alert.
+    invalidSelectText: {
+      type: String,
+      default: "未做任何选择，请选择后重试。",
+    },
+
+    useNativeAlert: {
+      type: Boolean,
+      default: false,
     },
 
     selectedList: {
@@ -252,6 +309,38 @@ export default {
       type: String,
       default: "角色",
     },
+
+    // Optional async request handlers.
+    // If provided, the component will manage loading/error state and rollback UI on failure.
+    expandRequest: {
+      type: Function,
+      required: false,
+    },
+
+    navRequest: {
+      type: Function,
+      required: false,
+    },
+
+    loadingText: {
+      type: String,
+      default: "加载中...",
+    },
+
+    loadErrorText: {
+      type: String,
+      default: "加载失败",
+    },
+
+    retryText: {
+      type: String,
+      default: "重试",
+    },
+
+    enableRetry: {
+      type: Boolean,
+      default: true,
+    },
   },
 
   data() {
@@ -262,6 +351,9 @@ export default {
       // 已选择的数据集合
       selectedItems: [],
 
+      // Fast lookup for selected items by nodeKey
+      selectedKeySet: new Set(),
+
       // 用来渲染的数据源
       renderData: [],
 
@@ -269,22 +361,100 @@ export default {
       searchKey: "",
 
       // 鼠标按下时候的初始 x 坐标
-      startX: "",
+      startX: 0,
 
       showType: "",
 
       isTyping: false,
+
+      searchDebounceTimer: null,
+
+      // Async load state (used only when expandRequest/navRequest are provided)
+      isLoading: false,
+      loadError: null,
+      lastLoadAction: null,
     };
   },
 
   mounted() {
-    if (Array.isArray(this.selectedList) && this.selectedList.length > 0) {
-      this.selectedItems = this.selectedList;
-    }
     this.renderData = this.data;
   },
 
   methods: {
+    async runAsyncRequest(action, requestFn, arg, rollbackCurrentData) {
+      if (typeof requestFn !== "function") {
+        return;
+      }
+      if (this.isLoading) {
+        return;
+      }
+
+      this.isLoading = true;
+      this.loadError = null;
+      this.lastLoadAction = {
+        action,
+        arg,
+        rollbackCurrentData,
+      };
+
+      this.$emit("on-load-start", { action, arg });
+
+      try {
+        await Promise.resolve(requestFn(arg));
+        this.$emit("on-load-end", { action, arg });
+      } catch (error) {
+        if (typeof rollbackCurrentData === "function") {
+          rollbackCurrentData();
+        }
+        this.loadError = error || new Error("load failed");
+        this.$emit("on-load-error", { action, arg, error: this.loadError });
+      } finally {
+        this.isLoading = false;
+      }
+    },
+
+    retryLastLoad() {
+      const last = this.lastLoadAction;
+      if (!last) {
+        return;
+      }
+      const fn = last.action === "expand" ? this.expandRequest : this.navRequest;
+      this.runAsyncRequest(last.action, fn, last.arg, last.rollbackCurrentData);
+    },
+    normalizeSelectedItem(row) {
+      if (!row || typeof row !== "object") {
+        return row;
+      }
+      const cloned = { ...row };
+      if (cloned && Object.prototype.hasOwnProperty.call(cloned, this.children)) {
+        delete cloned[this.children];
+      }
+      return cloned;
+    },
+
+    syncSelectedKeySet() {
+      const next = new Set();
+      (this.selectedItems || []).forEach((item) => {
+        if (item && item[this.nodeKey] != null) {
+          next.add(item[this.nodeKey]);
+        }
+      });
+      this.selectedKeySet = next;
+    },
+
+    emitSelectionChange(meta) {
+      // v-model
+      this.$emit("input", this.selectedItems);
+      // selectedList.sync (optional convenience)
+      this.$emit("update:selectedList", this.selectedItems);
+
+      // Standard change event (library-style)
+      this.$emit("change", {
+        selectedItems: this.selectedItems,
+        ...(meta || {}),
+      });
+    },
+
     // 手指按下
     gtouchstart(e) {
       // // 获取x 坐标
@@ -299,13 +469,17 @@ export default {
       // window.console.log("手指松开啦", e);
       if (e.changedTouches[0].clientX - this.startX >= this.slideDistance) {
         // console.log("移动距离大于" + this.slideDistance, this.currentData);
-        this.handleCurrentListClick(this.currentData.length - 2);
+        const targetIndex = this.currentData.length - 2;
+        this.handleCurrentListClick(targetIndex >= 0 ? targetIndex : -1);
         this.$emit("on-slide");
       }
     },
 
     // 切换组织/角色
     switchShowType() {
+      if (this.isLoading) {
+        return;
+      }
       switch (this.showType) {
         case "org":
           this.showType = "role";
@@ -316,6 +490,7 @@ export default {
           this.showType = "org";
           this.currentData = [];
           this.searchKey = "";
+          break;
         default:
           break;
       }
@@ -324,65 +499,115 @@ export default {
 
     // 是否显示选中状态
     isChecked(data) {
-      return this.selectedItems.find((item) => {
-        return item[this.nodeKey] == data[this.nodeKey];
-      });
+      if (!data) {
+        return false;
+      }
+      return this.selectedKeySet.has(data[this.nodeKey]);
     },
 
     // 点击选项
     handleItemClick(row) {
+      if (this.isLoading) {
+        return;
+      }
       if (!this.selectTypes.includes(row.type)) {
         return;
       }
+      const meta = {
+        sourceItem: row,
+        action: "select",
+      };
       // 多选
       if (this.isMultiple) {
-        const data = JSON.parse(JSON.stringify(row));
-        let isExist = this.selectedItems.find((i) => {
-          return data[this.nodeKey] == i[this.nodeKey];
-        });
+        const data = this.normalizeSelectedItem(row);
+        const key = data ? data[this.nodeKey] : null;
+        const isExist = key != null && this.selectedKeySet.has(key);
         if (isExist) {
+          meta.action = "deselect";
           // 存在当前项，则取消选择
           this.selectedItems = this.selectedItems.filter((res) => {
-            return res[this.nodeKey] !== data[this.nodeKey];
+            return res[this.nodeKey] !== key;
           });
         } else {
           // 不存在当前项，则将其加入到所选列表中
           this.selectedItems.push(data);
         }
       } else {
+        meta.action = "select";
         // 单选
         this.selectedItems = [];
-        this.selectedItems.push(row);
+        this.selectedItems.push(this.normalizeSelectedItem(row));
       }
+      this.syncSelectedKeySet();
+      this.emitSelectionChange(meta);
       this.$emit("on-select", row);
     },
 
     // 点击下级按钮获取下级目录及人员
-    handleItemChildClick(row) {
+    async handleItemChildClick(row) {
+      if (this.isLoading) {
+        return;
+      }
+
+      const prevCurrentData = this.currentData.slice();
       this.currentData.push(row);
       this.$emit("on-expand", row);
+
+      await this.runAsyncRequest(
+        "expand",
+        this.expandRequest,
+        row,
+        () => {
+          this.currentData = prevCurrentData;
+        }
+      );
     },
 
     // 点击面包屑导航触发
-    handleCurrentListClick(index) {
-      // 点击全部的时候index == -1
-      // 如果点击当前项则不做任何操作
-      if (
-        index == this.currentData.length - 1 ||
-        (this.currentData.length === 0 && index == -1)
-      ) {
-        this.searchKey = "";
-        this.$emit("on-nav", "-1");
+    async handleCurrentListClick(index) {
+      if (this.isLoading) {
         return;
       }
-      // 处理导航栏数据
+
+      // index == -1 means "全部"
+      // Clicking current breadcrumb should be a no-op.
+      if (index === this.currentData.length - 1) {
+        return;
+      }
+
+      // Clicking "全部" when already at root should be a no-op.
+      if (index === -1 && this.currentData.length === 0) {
+        return;
+      }
+
+      this.searchKey = "";
+
+      const prevCurrentData = this.currentData.slice();
+
       if (index > -1) {
         this.currentData = this.currentData.slice(0, index + 1);
         this.$emit("on-nav", this.currentData[index]);
+
+        await this.runAsyncRequest(
+          "nav",
+          this.navRequest,
+          this.currentData[index],
+          () => {
+            this.currentData = prevCurrentData;
+          }
+        );
       } else {
-        // 如果当前就是全部则不做任何操作
         this.currentData = [];
-        this.$emit("on-nav", "-1");
+        this.$emit("on-nav", -1);
+
+        await this.runAsyncRequest(
+          "nav",
+          this.navRequest,
+          -1,
+          () => {
+            this.currentData = prevCurrentData;
+          }
+        );
       }
     },
 
@@ -392,12 +617,25 @@ export default {
       this.selectedItems = this.selectedItems.filter((item) => {
         return item[this.nodeKey] !== data[this.nodeKey];
       });
+      this.syncSelectedKeySet();
+      this.emitSelectionChange({
+        sourceItem: data,
+        action: "delete",
+      });
     },
 
     // 提交
     handleSubmit() {
       if (this.isSelectRequired && !this.selectedItems.length) {
-        alert("未做任何选择，请选择后重试。");
+        const payload = {
+          reason: "required",
+          message: this.invalidSelectText,
+          selectedItems: this.selectedItems,
+        };
+        this.$emit("on-submit-invalid", payload);
+        if (this.useNativeAlert) {
+          alert(this.invalidSelectText);
+        }
         return;
       }
       // 触发父组件绑定事件，将值传回去
@@ -414,24 +652,36 @@ export default {
       if (this.isTyping) {
         return;
       }
-      console.log("search");
-      this.$emit("on-search", this.searchKey.trim());
+      const emitSearch = () => {
+        this.$emit("on-search", this.searchKey.trim());
+      };
+
+      if (!this.searchDebounce) {
+        emitSearch();
+        return;
+      }
+
+      if (this.searchDebounceTimer) {
+        clearTimeout(this.searchDebounceTimer);
+      }
+      this.searchDebounceTimer = setTimeout(emitSearch, this.searchDebounce);
     },
 
     // 输入中文ing
     handleComposionstart() {
       this.isTyping = true;
-      console.log("input start");
     },
 
     // 输入中文end
     handleComposionend() {
       this.isTyping = false;
-      console.log("input end");
     },
 
     // 清楚搜索
     clearSearchKey() {
+      if (this.isLoading) {
+        return;
+      }
       this.searchKey = "";
       this.$emit("on-clear");
     },
@@ -442,7 +692,38 @@ export default {
       handler(newVal, oldVal) {
         this.showType = newVal;
       },
-      deep: true,
+      immediate: true,
+    },
+
+    value: {
+      handler(val) {
+        // If v-model is not used, `value` will be undefined.
+        if (val === undefined) {
+          return;
+        }
+        if (Array.isArray(val)) {
+          this.selectedItems = val.map((item) => this.normalizeSelectedItem(item));
+        } else {
+          this.selectedItems = [];
+        }
+        this.syncSelectedKeySet();
+      },
+      immediate: true,
+    },
+
+    selectedList: {
+      handler(val) {
+        // v-model takes precedence when provided
+        if (this.value !== undefined) {
+          return;
+        }
+        if (Array.isArray(val)) {
+          this.selectedItems = val.map((item) => this.normalizeSelectedItem(item));
+        } else {
+          this.selectedItems = [];
+        }
+        this.syncSelectedKeySet();
+      },
       immediate: true,
     },
 
@@ -462,6 +743,44 @@ export default {
   position: absolute;
   inset: 10px;
   padding: 10px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+
+  /* Theme tokens (override on the host element to customize) */
+  --mo-font-size: 20px;
+  --mo-font-size-sm: 15px;
+  --mo-radius-pill: 25px;
+  --mo-radius-sm: 4px;
+  --mo-border-color: #eee;
+  --mo-border-color-soft: #f7ecec;
+  --mo-text-muted: #999;
+  --mo-text-muted-strong: #808080;
+  --mo-bg: #fff;
+  --mo-primary: #5284ea;
+  --mo-link: #409eff;
+  --mo-checkbox-checked: #1673ff;
+  --mo-action: #3c6eb7;
+  --mo-selected-bg: #ecf5ff;
+  --mo-selected-border: #d9ecff;
+  --mo-selected-text: #409eff;
+  --mo-clear-bg: rgb(214 190 190);
+  --mo-clear-text: #fff;
+}
+
+.mobile-org * {
+  box-sizing: border-box;
+}
+
+.mobile-org button {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.mobile-org button:focus-visible,
+.mobile-org input[type="search"]:focus-visible {
+  outline: 2px solid var(--mo-primary);
+  outline-offset: 2px;
 }
 
 .mobile-org .search {
@@ -483,8 +802,8 @@ input[type="search"] {
   position: relative;
   width: 100%;
   height: 100%;
-  border-radius: 25px;
-  border: 1px solid #f7ecec;
+  border-radius: var(--mo-radius-pill);
+  border: 1px solid var(--mo-border-color-soft);
   text-align: center;
 }
 
@@ -501,26 +820,30 @@ input[type="search"]::-webkit-search-cancel-button {
   height: 15px;
   border-radius: 50%;
   text-align: center;
-  background: rgb(214 190 190);
-  color: #fff;
+  background: var(--mo-clear-bg);
+  color: var(--mo-clear-text);
   font-weight: 600;
+  border: none;
+  padding: 0;
+  cursor: pointer;
 }
 
 .org-content * {
   margin: 0;
   padding: 0;
   list-style: none;
-  font-size: 20px;
+  font-size: var(--mo-font-size);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 .org-content {
-  /* height: 100%; */
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #eee;
+  border: 1px solid var(--mo-border-color);
+  flex: 1;
+  min-height: 0;
 }
 
 .org-content .org-content__current {
@@ -528,22 +851,28 @@ input[type="search"]::-webkit-search-cancel-button {
   word-break: keep-all;
   font-size: 14px;
   /* padding: 0 10px; */
-  /* height: 40px; */
-  height: 100%;
+  flex: none;
   padding: 5px;
   align-items: center;
-  box-shadow: 0px 0px 2px 2px #eee;
+  box-shadow: 0px 0px 2px 2px var(--mo-border-color);
   overflow-x: auto;
   overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   justify-content: space-between;
 }
 
-.org-content .org-content__current span {
+.org-content .org-content__current .breadcrumb-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
   position: relative;
   margin-right: 10px;
 }
 
-.org-content .org-content__current span::after {
+.org-content .org-content__current .breadcrumb-btn::after {
   display: block;
   position: absolute;
   content: "/";
@@ -551,40 +880,56 @@ input[type="search"]::-webkit-search-cancel-button {
   right: -10px;
 }
 
-.org-content .org-content__current span:last-child {
-  color: #808080;
+.org-content .org-content__current .breadcrumb-btn:last-child {
+  color: var(--mo-text-muted-strong);
 }
 
 /* switch org/role button style */
 .org-content .org-content__current .org-content__current__switchBtn .btn {
-  border: 1px solid #5284ea;
+  border: 1px solid var(--mo-primary);
   border-radius: 5px;
   padding: 0 5px;
-  background: #fff;
-  color: #5284ea;
+  background: var(--mo-bg);
+  color: var(--mo-primary);
 }
-.org-content .org-content__current span:last-child::after {
+.org-content .org-content__current .breadcrumb-btn:last-child::after {
   display: none;
 }
 
 .org-content .org-content__warp {
   flex: 1;
   overflow-y: auto;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--mo-border-color);
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
 }
 
 .org-content .org-content__warp .empty {
   padding: 20px 0;
-  color: #999;
+  color: var(--mo-text-muted);
   text-align: center;
 }
 
+.org-content .org-content__warp .empty .retry-btn {
+  background: transparent;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  padding: 6px 10px;
+  margin-left: 8px;
+  color: var(--mo-action);
+}
+
+.org-content .org-content__warp .empty .retry-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .org-content .org-content__warp .org-content__ul {
-  height: calc(100vh - 16rem);
   overflow: auto;
 }
 .org-content .org-content__warp .org-content__item {
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--mo-border-color);
   height: 38px;
   margin: 0 10px;
   display: flex;
@@ -603,13 +948,13 @@ input[type="search"]::-webkit-search-cancel-button {
 
 /*复选框样式 */
 .org-content .org-content__warp .org-content__item .item-checkbox:checked {
-  background: #1673ff;
+  background: var(--mo-checkbox-checked);
 }
 
 .org-content .org-content__warp .org-content__item .item-checkbox {
   width: 15px;
   height: 15px;
-  background-color: #ffffff;
+  background-color: var(--mo-bg);
   border: solid 1px #dddddd;
   font-size: 0.8rem;
   margin: 0 5px 0 0;
@@ -617,7 +962,8 @@ input[type="search"]::-webkit-search-cancel-button {
   position: relative;
   display: inline-block;
   vertical-align: top;
-  cursor: default;
+  cursor: pointer;
+  appearance: none;
   -webkit-appearance: none;
   -webkit-user-select: none;
   user-select: none;
@@ -668,31 +1014,31 @@ input[type="search"]::-webkit-search-cancel-button {
   width: 45px;
   padding-right: 5px;
   text-align: center;
-  color: #999;
+  color: var(--mo-text-muted);
 }
 
 .org-content .org-content__warp .org-content__item .org-content__item-child {
   padding: 0 8px;
   width: max-content;
-  color: #409eff;
-  border-left: 1px solid #eee;
+  color: var(--mo-link);
+  border-left: 1px solid var(--mo-border-color);
   box-sizing: border-box;
   cursor: pointer;
   font-weight: 600;
+  background: transparent;
+  border: none;
 }
 
 .org-content .org-content__operation {
-  position: absolute;
-  bottom: 0;
-  left: 10px;
-  right: 10px;
+  flex: none;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .org-content .org-content__operation .result-display {
   display: flex;
   justify-content: space-between;
   padding: 0.5rem 0;
-  border-top: 1px solid rgb(247, 236, 236);
+  border-top: 1px solid var(--mo-border-color-soft);
 }
 
 .org-content
@@ -700,10 +1046,14 @@ input[type="search"]::-webkit-search-cancel-button {
   .result-display
   .result-area__operation
   .cancel-btn {
+  background: transparent;
+  border: none;
+  font: inherit;
+  cursor: pointer;
   width: 40px;
   margin-right: 10px;
   padding: 0;
-  color: #3c6eb7;
+  color: var(--mo-action);
   text-align: center;
 }
 
@@ -712,9 +1062,13 @@ input[type="search"]::-webkit-search-cancel-button {
   .result-display
   .result-area__operation
   .submit-btn {
+  background: transparent;
+  border: none;
+  font: inherit;
+  cursor: pointer;
   width: 40px;
   padding: 0;
-  color: #3c6eb7;
+  color: var(--mo-action);
   text-align: center;
 }
 </style>
@@ -725,14 +1079,14 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 .seleted-item {
-  background-color: #ecf5ff;
+  background-color: var(--mo-selected-bg);
   display: inline-block;
   /* height: 1.3rem; */
   padding: 0 5px;
   line-height: 1.3rem;
-  font-size: 15px;
-  color: #409eff;
-  border: 1px solid #d9ecff;
+  font-size: var(--mo-font-size-sm);
+  color: var(--mo-selected-text);
+  border: 1px solid var(--mo-selected-border);
   border-radius: 4px;
   box-sizing: border-box;
   white-space: nowrap;

@@ -4,7 +4,12 @@
   "scripts": {
     "dev": "vue-cli-service serve",
     "build": "vue-cli-service build",
-    "mobile-org": "vue-cli-service build --target lib ./src/components/MobileOrg/index.js --dest npm-package --name mobile-org"
+    "build:demo": "vue-cli-service build",
+    "build:lib": "vue-cli-service build --target lib ./src/components/MobileOrg/index.js --dest npm-package --name mobile-org",
+    "mobile-org": "npm run build:lib",
+    "prepare:package": "npm run build:lib && node scripts/sync-npm-package.js",
+    "publish:npm": "npm run prepare:package && npm publish ./npm-package --access public",
+    "version": "node scripts/sync-npm-package.js"
   },
   "author": {
     "name": "ysh",

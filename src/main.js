@@ -1,11 +1,11 @@
 import Vue from "vue";
 import App from "./App.vue";
-// dev
-// import MobileOrg from "./components/MobileOrg";
+// dev: use local component implementation
+import MobileOrg from "./components/MobileOrg";
 
-// test
-import MobileOrg from 'mobile-org'
-import 'mobile-org/mobile-org.css'
+// If you want to test the published package instead, switch to:
+// import MobileOrg from "mobile-org";
+// import "mobile-org/mobile-org.css";
 
 Vue.use(MobileOrg);
 Vue.config.productionTip = false;
